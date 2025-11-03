@@ -1,0 +1,164 @@
+//***************/
+//Universidad del Valle de Guatemala 
+//BE3029 - Electrónica Digital 2
+//Marcela Castañeda - 23717
+//Abby Barrios 23137
+//Proyecto 2 ESP32
+//MCU: ESP32 Dev Kit v1
+//***************/
+
+//**************/
+//Librerías
+//**************/
+#include <Arduino.h>
+#include <ESP32SPISlave.h>
+#include <Wire.h>
+#include <LiquidCrystal.h>
+
+//**************/
+// Definiciones
+//**************/
+//LEDS
+#define LED_R 17
+#define LED_G 16
+#define LED_B 15
+#define POT 36 //Potenciómetro
+
+//I2C
+#define I2C_dev 0x55
+
+//**************/
+// Variables y objetos
+//**************/
+LiquidCrystal lcd(33, 32, 14, 12, 13, 4);
+ESP32SPISlave slave;
+// Buffers SPI
+uint8_t rx_buf[32];
+uint8_t tx_buf[32];
+
+//PARTE 4 PANTALLA LCD
+static inline void lcd_print_at(uint8_t col, uint8_t row, const char* s) {
+  lcd.setCursor(col, row);
+  lcd.print(s);
+}
+//Valores LCD
+static void lcd_draw_fixed_ui() {
+  lcd.clear();
+  lcd_print_at(0, 0, "PotV:");
+  lcd_print_at(6, 0, "PotB:");
+  lcd_print_at(12, 0, "LED:");
+
+  lcd_print_at(0,  1, "0.00V");
+  lcd_print_at(6,  1, "0-255");
+  lcd_print_at(12, 1, "R/G/B");
+}
+
+//de 0-4095 a 0-255 BITS 
+static void lcd_update_pot_and_bits(int raw4095) {
+  float v = (raw4095 * 3.3f) / 4095.0f; //Voltaje
+
+  lcd_print_at(0, 1, "     ");
+  char vbuf[6];
+  snprintf(vbuf, sizeof(vbuf), "%1.2fV", v);
+  lcd_print_at(0, 1, vbuf);
+
+  int bits255 = map(raw4095, 0, 4095, 0, 255);
+  lcd_print_at(7, 1, "     ");
+  char bbuf[6]; //255
+  snprintf(bbuf, sizeof(bbuf), "%d", bits255);
+  lcd_print_at(7, 1, bbuf);
+}
+
+//Actualización de letra 
+static void lcd_update_led_letter(char letter) {
+  lcd_print_at(12, 1, "     ");   // limpia 5 columnas
+  if (letter == 'R' || letter == 'G' || letter == 'B') {
+    char lbuf[2] = {letter, '\0'};
+    lcd_print_at(12, 1, lbuf);
+  } else {
+    lcd_print_at(12, 1, "R/G/B");
+  }
+}
+
+//SP1 PARTE 1 
+static void procesarComando(const String& cmd) {
+  int ledNum = 0, t_ms = 0;
+  if (sscanf(cmd.c_str(), "%d,%d", &ledNum, &t_ms) == 2 && t_ms > 0) {
+    int pin = 0; char letter = ' ';
+    if (ledNum == 1) { pin = LED_R; letter = 'R'; }
+    else if (ledNum == 2) { pin = LED_G; letter = 'G'; }
+    else if (ledNum == 3) { pin = LED_B; letter = 'B'; }
+    else return;
+
+    digitalWrite(pin, HIGH);
+        delay(t_ms);
+    digitalWrite(pin, LOW);
+
+    lcd_update_led_letter(letter);
+  } else {
+    Serial.println("Comando invalido o tiempo incorrecto.");
+  }
+}
+
+//I2C PARTE 3
+static void onRequest() {
+  int pot = analogRead(POT);
+  char out[10];
+  snprintf(out, sizeof(out), "%d", pot);
+  Wire.write((const uint8_t*)out, strlen(out));
+
+  //Al presionar 2 el ESP actualiza y manda a cambiar valores a la pantalla
+  lcd_update_pot_and_bits(pot);
+}
+static void onReceive(int) {
+
+}
+
+//**************/
+//Configuración principal
+//**************/
+void setup() {
+  Serial.begin(115200);
+  //Gpios
+  pinMode(LED_R, OUTPUT);
+  pinMode(LED_G, OUTPUT);
+  pinMode(LED_B, OUTPUT);
+  digitalWrite(LED_R, LOW);
+  digitalWrite(LED_G, LOW);
+  digitalWrite(LED_B, LOW);
+  pinMode(POT, INPUT);
+
+  //Pantalla LCD
+  lcd.begin(16, 2);
+  lcd_draw_fixed_ui();
+
+  //Esclavo
+  Wire.onRequest(onRequest);
+  Wire.onReceive(onReceive);
+  Wire.begin((uint8_t)I2C_dev);
+  Serial.println("ESP32 I2C esclavo listo");
+
+  //VSPI pines del .ioc
+  slave.begin(VSPI);
+  Serial.println("ESP32 SPI esclavo listo");
+
+  //Inicia
+  memset(tx_buf, 0, sizeof(tx_buf));
+}
+//**************/
+// Loop principal
+//**************/
+void loop() {
+  //Hasta que el maestro manda una opción de las dos
+  slave.wait(rx_buf, tx_buf, sizeof(rx_buf));
+  rx_buf[sizeof(rx_buf) - 1] = '\0';
+  String cmd = String((char*)rx_buf);
+  cmd.trim();
+
+  if (cmd.length() > 0) {
+    Serial.print("SPI RX: ");
+    Serial.println(cmd);
+    procesarComando(cmd);
+  }
+  memset(rx_buf, 0, sizeof(rx_buf));   //Vuelve a resetear
+}
